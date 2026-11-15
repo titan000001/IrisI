@@ -1,0 +1,6 @@
+{
+  "name": "CineRig",
+  "description": "Offline cinema camera with manual ISO/shutter, RAW/Log profiles, film emulation, LUT color grading, waveform histogram, focus peaking, stabilization, audio monitoring, and customizable HUD layouts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
