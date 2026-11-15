@@ -29,7 +29,7 @@ class ExampleRobolectricTest {
     fun `read string from context`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
-        assertEquals("CineRig", appName)
+        assertEquals("IrisI", appName)
     }
 
     @Test
@@ -117,5 +117,25 @@ class ExampleRobolectricTest {
     @Test
     fun `exposure programs cover auto p s iso and manual modes`() {
         assertEquals(listOf("AUTO", "P", "S", "ISO", "M"), ExposureProgram.entries.map { it.shortCode })
+    }
+
+    @Test
+    fun `focus stack merge selects sharpest plane per pixel`() {
+        val softFrame = Bitmap.createBitmap(5, 5, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.rgb(100, 100, 100))
+        }
+        val sharpFrame = Bitmap.createBitmap(5, 5, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.rgb(100, 100, 100))
+            setPixel(2, 2, Color.rgb(240, 240, 240))
+        }
+        val fused = ColorEngine.mergeFocusStackBitmaps(listOf(softFrame, sharpFrame))
+        assertNotNull(fused)
+        assertTrue(Color.red(fused!!.getPixel(2, 2)) >= 230)
+        val sharpened = ColorEngine.applyDevelopToBitmap(fused, DevelopSettings(sharpening = 0.8f))
+        assertNotNull(sharpened)
+        softFrame.recycle()
+        sharpFrame.recycle()
+        fused.recycle()
+        sharpened.recycle()
     }
 }

@@ -48,6 +48,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
@@ -388,7 +389,7 @@ private fun TopHudBar(
                         val durText = CineRigViewModel.formatDuration(state.recordingDurationMs)
                         val sizeText = CineRigViewModel.formatBytes(state.recordedBytes)
                         val rawSuffix = if (state.videoCodecFormat == VideoCodecFormat.RAW_CINEMA_DNG) {
-                            " • ${state.rawBurstFrameCount}F RAW"
+                            " • PRO MP4"
                         } else ""
                         Text(
                             text = "$prefix $durText • $sizeText$rawSuffix",
@@ -421,18 +422,28 @@ private fun TopHudBar(
                     Row(
                         modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
-                            Icons.Rounded.AspectRatio,
-                            contentDescription = "Aspect Ratio",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(13.dp)
+                            painter = painterResource(R.drawable.ic_irisi_aperture),
+                            contentDescription = "IrisI Optical Engine",
+                            tint = CinemaAmber,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = "IrisI",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "•",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
                             text = aspectBadgeLabel,
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = CinemaAmber
                         )
                     }
                 }
@@ -1561,17 +1572,17 @@ private fun PermissionGateScreen(onRequestPermissions: () -> Unit) {
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = Icons.Rounded.Camera,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(44.dp)
+                        painter = painterResource(R.drawable.ic_irisi_aperture),
+                        contentDescription = "IrisI emblem",
+                        tint = CinemaAmber,
+                        modifier = Modifier.size(46.dp)
                     )
                 }
             }
             Spacer(Modifier.height(22.dp))
             Text(
                 text = stringResource(R.string.app_name),
-                style = MaterialTheme.typography.displaySmall
+                style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold)
             )
             Spacer(Modifier.height(6.dp))
             Surface(
@@ -1584,7 +1595,7 @@ private fun PermissionGateScreen(onRequestPermissions: () -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Icon(
-                        Icons.Rounded.CameraAlt,
+                        painter = painterResource(R.drawable.ic_irisi_aperture),
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(14.dp)

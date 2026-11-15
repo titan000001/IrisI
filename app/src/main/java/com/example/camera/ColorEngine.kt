@@ -178,6 +178,39 @@ object ColorEngine {
             out.setPixels(pixels, 0, w, 0, 0, w, h)
         }
 
+        // 3x3 unsharp-mask sharpening pass
+        if (dev.sharpening > 0.05f && out.width >= 3 && out.height >= 3) {
+            val w = out.width
+            val h = out.height
+            val srcPx = IntArray(w * h)
+            out.getPixels(srcPx, 0, w, 0, 0, w, h)
+            val dstPx = srcPx.copyOf()
+            val amount = dev.sharpening.coerceIn(0f, 1f) * 0.75f
+            for (y in 1 until h - 1) {
+                val rowOff = y * w
+                for (x in 1 until w - 1) {
+                    val idx = rowOff + x
+                    val c = srcPx[idx]
+                    val a = c ushr 24 and 0xFF
+                    val rC = c ushr 16 and 0xFF
+                    val gC = c ushr 8 and 0xFF
+                    val bC = c and 0xFF
+                    val n1 = srcPx[idx - w]
+                    val n2 = srcPx[idx + w]
+                    val n3 = srcPx[idx - 1]
+                    val n4 = srcPx[idx + 1]
+                    val avgR = ((n1 ushr 16 and 0xFF) + (n2 ushr 16 and 0xFF) + (n3 ushr 16 and 0xFF) + (n4 ushr 16 and 0xFF)) / 4f
+                    val avgG = ((n1 ushr 8 and 0xFF) + (n2 ushr 8 and 0xFF) + (n3 ushr 8 and 0xFF) + (n4 ushr 8 and 0xFF)) / 4f
+                    val avgB = ((n1 and 0xFF) + (n2 and 0xFF) + (n3 and 0xFF) + (n4 and 0xFF)) / 4f
+                    val rOut = (rC + amount * (rC - avgR)).toInt().coerceIn(0, 255)
+                    val gOut = (gC + amount * (gC - avgG)).toInt().coerceIn(0, 255)
+                    val bOut = (bC + amount * (bC - avgB)).toInt().coerceIn(0, 255)
+                    dstPx[idx] = (a shl 24) or (rOut shl 16) or (gOut shl 8) or bOut
+                }
+            }
+            out.setPixels(dstPx, 0, w, 0, 0, w, h)
+        }
+
         if (dev.vignette > 0.02f) {
             val cx = out.width / 2f
             val cy = out.height / 2f
@@ -252,6 +285,82 @@ object ColorEngine {
             outPixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
         }
         return Bitmap.createBitmap(outPixels, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /**
+     * Genuine Laplacian sharpness focus-stack fusion: for each pixel (x, y), selects the color sample
+     * from whichever focus-bracket frame exhibits the strongest local 3x3 luminance contrast.
+     */
+    fun mergeFocusStackBitmaps(frames: List<Bitmap>): Bitmap? {
+        if (frames.isEmpty()) return null
+        if (frames.size == 1) return frames.first().copy(Bitmap.Config.ARGB_8888, false)
+        val w = frames.first().width
+        val h = frames.first().height
+        val count = w * h
+        val bestScore = IntArray(count) { -1 }
+        val bestPixels = IntArray(count)
+        val buf = IntArray(count)
+
+        fun lumaOf(argb: Int): Int {
+            val r = argb ushr 16 and 0xFF
+            val g = argb ushr 8 and 0xFF
+            val b = argb and 0xFF
+            return (77 * r + 150 * g + 29 * b) shr 8
+        }
+
+        frames.forEach { bmp ->
+            val scaled = if (bmp.width == w && bmp.height == h) bmp else Bitmap.createScaledBitmap(bmp, w, h, true)
+            scaled.getPixels(buf, 0, w, 0, 0, w, h)
+            if (scaled !== bmp) scaled.recycle()
+
+            for (y in 0 until h) {
+                val yPrev = (y - 1).coerceAtLeast(0) * w
+                val yCurr = y * w
+                val yNext = (y + 1).coerceAtMost(h - 1) * w
+                for (x in 0 until w) {
+                    val idx = yCurr + x
+                    val xPrev = (x - 1).coerceAtLeast(0)
+                    val xNext = (x + 1).coerceAtMost(w - 1)
+                    val c = lumaOf(buf[idx])
+                    val lap = abs(
+                        4 * c -
+                            lumaOf(buf[yCurr + xPrev]) -
+                            lumaOf(buf[yCurr + xNext]) -
+                            lumaOf(buf[yPrev + x]) -
+                            lumaOf(buf[yNext + x])
+                    )
+                    if (lap > bestScore[idx]) {
+                        bestScore[idx] = lap
+                        bestPixels[idx] = buf[idx]
+                    }
+                }
+            }
+        }
+        return Bitmap.createBitmap(bestPixels, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /**
+     * Decodes JPEG or DNG URIs via ImageDecoder on API 28+ (backed by libdng_sdk) with BitmapFactory fallback.
+     */
+    fun decodeBitmapForDevelop(
+        resolver: android.content.ContentResolver,
+        uri: android.net.Uri,
+        sampleSize: Int = 1
+    ): Bitmap? {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            val decoded = runCatching {
+                val source = android.graphics.ImageDecoder.createSource(resolver, uri)
+                android.graphics.ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                    decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+                    if (sampleSize > 1) decoder.setTargetSampleSize(sampleSize)
+                }
+            }.getOrNull()
+            if (decoded != null) return decoded
+        }
+        return runCatching {
+            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            resolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
+        }.getOrNull()
     }
 
     fun applyGradingToBitmap(

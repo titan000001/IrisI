@@ -66,10 +66,10 @@ enum class PhotoFormat(val label: String, val badge: String) {
 }
 
 enum class VideoCodecFormat(val label: String, val shortLabel: String, val description: String) {
-    H264_STANDARD("H.264 Rec.709", "H264", "Universal 8-bit MP4 container"),
-    HEVC_LOG("H.265 10-bit Log", "HEVC LOG", "High dynamic range Log curve encoding"),
-    HLG_10BIT("HLG 10-bit HDR", "HLG10", "Hardware 10-bit Hybrid Log-Gamma"),
-    RAW_CINEMA_DNG("CinemaDNG RAW", "RAW DNG", "Uncompressed multi-frame DNG sidecar + proxy")
+    H264_STANDARD("SDR Video (MP4)", "SDR MP4", "Hardware MP4 video encoding via CameraX Recorder"),
+    HEVC_LOG("Log Monitor MP4", "LOG MON", "Flat Log monitoring preview recorded to high-bitrate MP4"),
+    HLG_10BIT("HLG 10-bit HDR", "HLG10", "Hardware 10-bit Hybrid Log-Gamma HEVC where supported"),
+    RAW_CINEMA_DNG("Pro Master MP4 + Sidecar", "PRO MP4", "Max-bitrate MP4 with lens/exposure sidecar (raw DNG stream unsupported)")
 }
 
 enum class LogProfile(

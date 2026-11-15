@@ -1,18 +1,18 @@
 <resources>
-    <string name="app_name">CineRig</string>
-    <string name="offline_privacy_badge">Air-Gapped • Offline Only</string>
+    <string name="app_name">IrisI</string>
+    <string name="offline_privacy_badge">IrisI Optical • Offline Engine</string>
     <string name="permission_camera_title">Camera &amp; Microphone Access</string>
-    <string name="permission_camera_body">CineRig operates 100% offline with zero network permissions. Grant camera and microphone access to unlock manual sensor controls, RAW capture, and real-time audio monitoring.</string>
-    <string name="permission_grant_button">Enable Cinema Hardware</string>
+    <string name="permission_camera_body">IrisI operates 100% offline with zero network permissions. Grant camera and microphone access to unlock manual sensor controls, RAW DNG capture, and real-time audio monitoring.</string>
+    <string name="permission_grant_button">Enable Optical Hardware</string>
     <string name="mode_photo">PHOTO</string>
     <string name="mode_video">VIDEO</string>
     <string name="mode_night">NIGHT</string>
     <string name="mode_raw_video">RAW VID</string>
     <string name="shutter_capture_desc">Capture photo or toggle video recording</string>
-    <string name="vault_button_desc">Open local media vault</string>
+    <string name="vault_button_desc">Open local IrisI media library</string>
     <string name="customizer_button_desc">Customize HUD layout and function buttons</string>
     <string name="presets_button_desc">Manage camera presets</string>
-    <string name="color_grade_button_desc">Open Log profiles, film emulation, and color grading</string>
+    <string name="color_grade_button_desc">Open Log profiles, film emulation, and color workbench</string>
     <string name="audio_monitor_button_desc">Open external microphone and audio monitoring</string>
     <string name="video_settings_button_desc">Open video resolution, bitrate, open gate, and stabilization</string>
 </resources>

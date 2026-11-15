@@ -147,6 +147,7 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
     private var bindJob: Job? = null
     private var timerJob: Job? = null
     private var intervalJob: Job? = null
+    private var lastPriorityBalanceMs = 0L
 
     val frameAnalyzer = FrameAnalyzer(
         scopeMode = { _uiState.value.scopeMode },
@@ -177,6 +178,20 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
                     zebraBitmap = result.zebraBitmap,
                     falseColorBitmap = result.falseColorBitmap
                 )
+            }
+            val exp = _uiState.value.exposure
+            val now = System.currentTimeMillis()
+            if ((exp.program == ExposureProgram.SHUTTER_PRIORITY || exp.program == ExposureProgram.ISO_PRIORITY) &&
+                !exp.isAeAfLocked &&
+                now - lastPriorityBalanceMs > 700L &&
+                kotlin.math.abs(result.histogram.avgLumaEv - 0.5f) > 0.08f
+            ) {
+                lastPriorityBalanceMs = now
+                val balanced = applyPriorityAutoBalance(exp)
+                if (balanced != exp) {
+                    _uiState.update { it.copy(exposure = balanced) }
+                    cameraController.applyCamera2ManualControls(balanced, _uiState.value.stabilizationMode)
+                }
             }
         }
     )
@@ -836,9 +851,11 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             val result = runCatching {
                 val uri = Uri.parse(target.uriString)
-                val decoded = getApplication<Application>().contentResolver.openInputStream(uri)?.use { stream ->
-                    BitmapFactory.decodeStream(stream)
-                } ?: throw IllegalStateException("Cannot decode source image/DNG")
+                val decoded = ColorEngine.decodeBitmapForDevelop(
+                    getApplication<Application>().contentResolver,
+                    uri,
+                    sampleSize = 1
+                ) ?: throw IllegalStateException("Cannot decode source image/DNG")
                 val developed = ColorEngine.applyDevelopToBitmap(decoded, dev)
                 decoded.recycle()
                 val outName = target.displayName.substringBeforeLast('.') + "_DEV.jpg"

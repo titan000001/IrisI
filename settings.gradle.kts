@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "CineRig"
+rootProject.name = "IrisI"
 
 include(":app")

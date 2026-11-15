@@ -102,7 +102,7 @@ class CameraController(private val context: Context) {
     private var imageCapture: ImageCapture? = null
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
-    private var rawBurstJob: Job? = null
+    private var primaryBackFocalMm: Float = 4.5f
     private val bindMutex = Mutex()
     private var videoPipelineAvailable = false
 
@@ -175,6 +175,7 @@ class CameraController(private val context: Context) {
             val primaryFocal = backCandidates.firstOrNull()?.second
                 ?.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
                 ?.firstOrNull() ?: 4.5f
+            primaryBackFocalMm = primaryFocal
 
             backCandidates.distinctBy { it.first }.forEachIndexed { idx, (id, chars) ->
                 val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: primaryFocal
@@ -359,13 +360,17 @@ class CameraController(private val context: Context) {
             }.getOrNull()?.also { extensionsManager = it }
 
             val targetLens = _selectedLens.value
+            var matchedDirectCameraId = false
             val baseSelector = CameraSelector.Builder().apply {
                 if (targetLens != null) {
                     addCameraFilter { infos ->
                         val exact = infos.filter { info ->
                             runCatching { Camera2CameraInfo.from(info).cameraId == targetLens.cameraId }.getOrDefault(false)
                         }
-                        exact.ifEmpty {
+                        if (exact.isNotEmpty()) {
+                            matchedDirectCameraId = true
+                            exact
+                        } else {
                             val facing = if (targetLens.isFront) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
                             infos.filter { it.lensFacing == facing }
                         }
@@ -526,7 +531,13 @@ class CameraController(private val context: Context) {
                 camera.cameraControl.enableLowLightBoostAsync(nightBoostEnabled || captureMode == CaptureMode.NIGHT)
             }
 
-            applyZoom(_zoomRatio.value)
+            if (targetLens != null && !matchedDirectCameraId && !targetLens.isFront && primaryBackFocalMm > 0f) {
+                // Physical sub-sensor behind logical multi-cam: engage optical lens switch via CONTROL_ZOOM_RATIO
+                val targetFocalZoom = (targetLens.focalLengthMm / primaryBackFocalMm).coerceIn(0.4f, 12f)
+                applyZoom(targetFocalZoom)
+            } else {
+                applyZoom(_zoomRatio.value)
+            }
             applyCamera2ManualControls(exposure, stabilizationMode)
         } catch (t: Throwable) {
             _cameraError.value = t.localizedMessage ?: "Camera initialization unavailable"
@@ -817,7 +828,6 @@ class CameraController(private val context: Context) {
         }
 
     private fun cropToAspectRatio(src: Bitmap, ratio: PhotoAspectRatio): Bitmap {
-        if (ratio == PhotoAspectRatio.RATIO_4_3 || ratio == PhotoAspectRatio.RATIO_16_9) return src
         val isLand = src.width >= src.height
         val targetAspect = if (isLand) ratio.ratioLandscape else ratio.ratioPortrait
         val curAspect = src.width.toFloat() / src.height.coerceAtLeast(1)
@@ -855,7 +865,7 @@ class CameraController(private val context: Context) {
             return
         }
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
-        val baseName = "CINERIG_$timestamp"
+        val baseName = "IRISI_$timestamp"
 
         val lensSupportsRaw = _selectedLens.value?.supportsRaw == true
         val useDirectFileRaw = captureMode != CaptureMode.NIGHT &&
@@ -869,7 +879,7 @@ class CameraController(private val context: Context) {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, dngName)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/x-adobe-dng")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/CineRig")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/IrisI")
                 }
             }
             val rawOptions = ImageCapture.OutputFileOptions.Builder(
@@ -883,7 +893,7 @@ class CameraController(private val context: Context) {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, "$baseName.jpg")
                     put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/CineRig")
+                        put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/IrisI")
                     }
                 }
                 val jpgOptions = ImageCapture.OutputFileOptions.Builder(
@@ -1035,6 +1045,7 @@ class CameraController(private val context: Context) {
                     sequenceMode == PhotoSequenceMode.FOCUS_STACK -> {
                         val maxDiopters = (_selectedLens.value?.minFocusDistance ?: 8f).coerceAtLeast(1f)
                         val steps = 4
+                        val planes = mutableListOf<Bitmap>()
                         for (i in 0 until steps) {
                             val diopter = (maxDiopters * (i / (steps - 1f))).coerceIn(0f, maxDiopters)
                             withContext(Dispatchers.Main) {
@@ -1045,27 +1056,37 @@ class CameraController(private val context: Context) {
                                 )
                             }
                             delay(160L)
-                            val frame = captureSingleInMemoryBitmap(cap)
-                            val cropped = cropToAspectRatio(frame, photoAspectRatio)
+                            planes.add(captureSingleInMemoryBitmap(cap))
+                        }
+                        withContext(Dispatchers.Main) {
+                            applyCamera2ManualControls(exposure, stabilizationMode)
+                        }
+                        val fused = ColorEngine.mergeFocusStackBitmaps(planes)
+                        planes.forEach { it.recycle() }
+                        val finalBmp = fused?.let {
+                            val cropped = cropToAspectRatio(it, photoAspectRatio)
                             val graded = ColorEngine.applyGradingToBitmap(cropped, logProfile, filmPreset, grading)
-                            if (cropped !== frame) cropped.recycle()
-                            frame.recycle()
-                            val saved = saveBitmapToMediaStore(graded, "${baseName}_F${i + 1}.jpg")
-                            graded.recycle()
-                            if (i == steps - 1 && saved != null) {
-                                withContext(Dispatchers.Main) {
-                                    applyCamera2ManualControls(exposure, stabilizationMode)
-                                    onProgress(0, 0, "")
-                                    onComplete(
-                                        CaptureCompletion(
-                                            uriString = saved.first.toString(),
-                                            displayName = "${baseName}_F1-$steps.jpg",
-                                            isVideo = false,
-                                            formatBadge = "F-STACK ${steps}F",
-                                            fileBytes = saved.second
-                                        )
+                            if (cropped !== it) cropped.recycle()
+                            it.recycle()
+                            graded
+                        } ?: throw IllegalStateException("Focus stack fusion failed")
+
+                        val saved = saveBitmapToMediaStore(finalBmp, "${baseName}_FSTACK.jpg")
+                        finalBmp.recycle()
+                        withContext(Dispatchers.Main) {
+                            onProgress(0, 0, "")
+                            if (saved != null) {
+                                onComplete(
+                                    CaptureCompletion(
+                                        uriString = saved.first.toString(),
+                                        displayName = "${baseName}_FSTACK.jpg",
+                                        isVideo = false,
+                                        formatBadge = "F-STACK ${steps}F",
+                                        fileBytes = saved.second
                                     )
-                                }
+                                )
+                            } else {
+                                onError("Failed saving focus-stacked composite")
                             }
                         }
                     }
@@ -1141,7 +1162,7 @@ class CameraController(private val context: Context) {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/CineRig")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/IrisI")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
         }
@@ -1185,8 +1206,6 @@ class CameraController(private val context: Context) {
         if (_isRecording.value) {
             activeRecording?.stop()
             activeRecording = null
-            rawBurstJob?.cancel()
-            rawBurstJob = null
             _isRecording.value = false
             _isRecordingPaused.value = false
             onRecordingStateChanged(false)
@@ -1201,13 +1220,13 @@ class CameraController(private val context: Context) {
 
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
         val isRawVideo = videoCodecFormat == VideoCodecFormat.RAW_CINEMA_DNG
-        val displayName = if (isRawVideo) "CINERIG_RAW_$timestamp.mp4" else "CINERIG_$timestamp.mp4"
+        val displayName = if (isRawVideo) "IRISI_RAW_$timestamp.mp4" else "IRISI_$timestamp.mp4"
 
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/CineRig")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/IrisI")
             }
         }
 
@@ -1225,25 +1244,6 @@ class CameraController(private val context: Context) {
         _rawBurstFrameCount.value = 0
         _recordedBytes.value = 0L
         _isRecordingPaused.value = false
-
-        if (isRawVideo) {
-            val rawSessionDir = File(context.filesDir, "raw_sidecars/CINERIG_RAW_$timestamp").apply { mkdirs() }
-            rawBurstJob = scope.launch(Dispatchers.IO) {
-                var frame = 0
-                while (isActive) {
-                    if (!_isRecordingPaused.value) {
-                        frame++
-                        _rawBurstFrameCount.value = frame
-                        if (frame % 24 == 1) {
-                            File(rawSessionDir, "reel_metadata.txt").writeText(
-                                "Reel=CINERIG_RAW_$timestamp\nBitrate=${videoBitrate.mbps}Mbps\nFrames=$frame\n"
-                            )
-                        }
-                    }
-                    delay(42L)
-                }
-            }
-        }
 
         activeRecording = pending.start(ContextCompat.getMainExecutor(context)) { event ->
             when (event) {
@@ -1271,12 +1271,20 @@ class CameraController(private val context: Context) {
                     _isRecording.value = false
                     _isRecordingPaused.value = false
                     onRecordingStateChanged(false)
-                    rawBurstJob?.cancel()
-                    rawBurstJob = null
                     refreshStorageAndCapabilities()
                     if (event.hasError()) {
                         onError("Video recording stopped with code ${event.error}")
                     } else {
+                        if (isRawVideo) {
+                            scope.launch(Dispatchers.IO) {
+                                runCatching {
+                                    val sidecarDir = File(context.filesDir, "raw_sidecars").apply { mkdirs() }
+                                    File(sidecarDir, "IRISI_RAW_$timestamp.meta.txt").writeText(
+                                        "Clip=$displayName\nLens=${_selectedLens.value?.cameraId}\nBitrate=${videoBitrate.mbps}Mbps\nDurationMs=${_recordingDurationMs.value}\nBytes=${_recordedBytes.value}\nNote=Compressed master MP4 (12-bit RAW DNG stream requires dedicated Camera2 RAW_SENSOR pipeline)\n"
+                                    )
+                                }
+                            }
+                        }
                         onComplete(
                             CaptureCompletion(
                                 uriString = event.outputResults.outputUri.toString(),
@@ -1295,7 +1303,6 @@ class CameraController(private val context: Context) {
 
     fun release() {
         runCatching { activeRecording?.stop() }
-        rawBurstJob?.cancel()
         cameraExecutor.shutdown()
     }
 

@@ -58,7 +58,7 @@ fun HardwareCapabilitiesSheet(
                     Column {
                         Text("Local Storage Available", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "Offline MediaStore DCIM/CineRig & Movies/CineRig",
+                            "Offline MediaStore DCIM/IrisI & Movies/IrisI",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

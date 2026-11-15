@@ -1,6 +1,6 @@
 {
-  "name": "CineRig",
-  "description": "Offline cinema camera with manual ISO/shutter, RAW/Log profiles, film emulation, LUT color grading, waveform histogram, focus peaking, stabilization, audio monitoring, and customizable HUD layouts.",
+  "name": "IrisI",
+  "description": "IrisI — Offline professional photography and cinema instrument with manual ISO/shutter/EV, RAW DNG capture, Log/Open Gate video, film looks, scopes, RAW development, and customizable HUD layouts.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

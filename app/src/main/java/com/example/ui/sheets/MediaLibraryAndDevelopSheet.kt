@@ -106,7 +106,7 @@ fun MediaLibrarySheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("Local Media Library", style = MaterialTheme.typography.titleMedium)
+                    Text("IrisI Media Library", style = MaterialTheme.typography.titleMedium)
                     Text(
                         "Free Space: ${CineRigViewModel.formatBytes(state.deviceCapabilities.availableStorageBytes)} • Offline Vault",
                         style = MaterialTheme.typography.labelSmall,
@@ -441,8 +441,7 @@ fun DevelopLabSheet(
         sourcePreview = withContext(Dispatchers.IO) {
             runCatching {
                 val uri = Uri.parse(target.uriString)
-                val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+                ColorEngine.decodeBitmapForDevelop(context.contentResolver, uri, sampleSize = 2)
             }.getOrNull()
         }
     }
