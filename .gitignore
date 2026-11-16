@@ -16,3 +16,7 @@
 local.properties
 .env
 debug.keystore
+/automation/**/__pycache__/
+/design/**/__pycache__/
+# Keep private, large validation captures local; retain hashes/reports rather than raw video.
+/docs/validation/**/*.mp4

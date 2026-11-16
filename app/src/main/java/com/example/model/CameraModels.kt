@@ -6,7 +6,7 @@ enum class CaptureMode(val label: String) {
     PHOTO("PHOTO"),
     VIDEO("VIDEO"),
     NIGHT("NIGHT"),
-    RAW_VIDEO("RAW VID")
+    RAW_VIDEO("DNG SEQ")
 }
 
 enum class ExposureProgram(val shortCode: String, val label: String) {
@@ -67,9 +67,10 @@ enum class PhotoFormat(val label: String, val badge: String) {
 
 enum class VideoCodecFormat(val label: String, val shortLabel: String, val description: String) {
     H264_STANDARD("SDR Video (MP4)", "SDR MP4", "Hardware MP4 video encoding via CameraX Recorder"),
-    HEVC_LOG("Log Monitor MP4", "LOG MON", "Flat Log monitoring preview recorded to high-bitrate MP4"),
+    HEVC_LOG("Log Monitor MP4", "LOG MON", "Tone-mapped preview only; MP4 does not contain the monitoring LOG curve. Codec is device-selected."),
     HLG_10BIT("HLG 10-bit HDR", "HLG10", "Hardware 10-bit Hybrid Log-Gamma HEVC where supported"),
-    RAW_CINEMA_DNG("Pro Master MP4 + Sidecar", "PRO MP4", "Max-bitrate MP4 with lens/exposure sidecar (raw DNG stream unsupported)")
+    IRISI_LOG_8("IrisI LOG 8-bit (Experimental)", "LOG8", "Recorded GPU LOG from ISP SDR, AVC with grading sidecar. Does not recover clipped highlights; 8-bit banding risk."),
+    RAW_CINEMA_DNG("Experimental DNG Sequence", "DNG SEQ", "Sequential RAW_SENSOR DNG frames; cadence is hardware-limited and not encoded video")
 }
 
 enum class LogProfile(

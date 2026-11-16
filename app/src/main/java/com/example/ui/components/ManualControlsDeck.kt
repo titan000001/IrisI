@@ -109,7 +109,7 @@ fun LensAndZoomBar(
                             }
                             Surface(
                                 modifier = Modifier
-                                    .defaultMinSize(minWidth = 44.dp, minHeight = 30.dp)
+                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                                     .testTag("lens_pill_${lens.label}")
                                     .clickable { onSelectLens(lens) },
                                 shape = CircleShape,
@@ -137,7 +137,7 @@ fun LensAndZoomBar(
 
             Surface(
                 modifier = Modifier
-                    .defaultMinSize(minHeight = 34.dp)
+                    .defaultMinSize(minHeight = 48.dp)
                     .testTag("zoom_pill_toggle")
                     .clickable(onClick = onToggleZoomSlider),
                 shape = CircleShape,
@@ -194,7 +194,7 @@ fun ManualControlsDeck(
             ) {
                 Surface(
                     modifier = Modifier
-                        .defaultMinSize(minHeight = 36.dp)
+                        .defaultMinSize(minHeight = 48.dp)
                         .testTag("toggle_manual_deck")
                         .clickable(onClick = onToggleExpanded),
                     shape = CircleShape,
@@ -292,7 +292,7 @@ fun ManualControlsDeck(
                             Surface(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .defaultMinSize(minHeight = 28.dp)
+                                    .defaultMinSize(minHeight = 48.dp)
                                     .testTag("exp_program_${prog.name}")
                                     .clickable { onSelectProgram(prog) },
                                 shape = RoundedCornerShape(8.dp),
@@ -551,7 +551,7 @@ private fun TelemetryTabChip(
 ) {
     Surface(
         modifier = modifier
-            .defaultMinSize(minHeight = 36.dp)
+            .defaultMinSize(minHeight = 48.dp)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(10.dp),
         color = if (selected) MaterialTheme.colorScheme.primaryContainer
@@ -572,7 +572,7 @@ private fun TelemetryTabChip(
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                style = MaterialTheme.typography.labelSmall,
                 color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
             )

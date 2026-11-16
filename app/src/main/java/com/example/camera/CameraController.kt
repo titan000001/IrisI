@@ -72,6 +72,8 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.roundToInt
@@ -102,6 +104,8 @@ class CameraController(private val context: Context) {
     private var imageCapture: ImageCapture? = null
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
+    @Volatile private var rawSequenceRecorder: RawSequenceRecorder? = null
+    private var logVideoEffect: LogVideoEffect? = null
     private var primaryBackFocalMm: Float = 4.5f
     private val bindMutex = Mutex()
     private var videoPipelineAvailable = false
@@ -144,6 +148,10 @@ class CameraController(private val context: Context) {
 
     private val _cameraError = MutableStateFlow<String?>(null)
     val cameraError: StateFlow<String?> = _cameraError.asStateFlow()
+    private val _cameraNotice = MutableStateFlow<String?>(null)
+    val cameraNotice: StateFlow<String?> = _cameraNotice.asStateFlow()
+    private val _liveAnalysisAvailable = MutableStateFlow(false)
+    val liveAnalysisAvailable: StateFlow<Boolean> = _liveAnalysisAvailable.asStateFlow()
 
     fun discoverLenses() {
         val lenses = mutableListOf<LensInfo>()
@@ -351,6 +359,9 @@ class CameraController(private val context: Context) {
     ) = bindMutex.withLock {
         try {
             _cameraError.value = null
+            _cameraNotice.value = null
+            _liveAnalysisAvailable.value = false
+            frameAnalyzer.clear()
             val provider: ProcessCameraProvider = cameraProvider
                 ?: ProcessCameraProvider.getInstance(context).awaitFuture(ContextCompat.getMainExecutor(context)).also {
                     cameraProvider = it
@@ -438,19 +449,34 @@ class CameraController(private val context: Context) {
             }
 
             val imageAnalysis = ImageAnalysis.Builder()
+                .setResolutionSelector(ResolutionSelector.Builder()
+                    .setResolutionStrategy(ResolutionStrategy(Size(640, 480),
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
+                    .build())
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .build()
                 .apply {
-                    setAnalyzer(cameraExecutor, frameAnalyzer)
+                    setAnalyzer(cameraExecutor, frameAnalyzer.sessionAnalyzer())
                 }
 
             val isVideoMode = captureMode == CaptureMode.VIDEO || captureMode == CaptureMode.RAW_VIDEO
+            val newLogEffect = if (isVideoMode && videoCodecFormat == VideoCodecFormat.IRISI_LOG_8) {
+                LogVideoEffect { error ->
+                    _cameraError.value = "Recorded LOG processing failed: ${error.message}"
+                    ContextCompat.getMainExecutor(context).execute { activeRecording?.stop() }
+                }
+            } else null
             val useCaseGroupBuilder = UseCaseGroup.Builder()
                 .addUseCase(preview)
                 .addUseCase(imageAnalysis)
+            newLogEffect?.let { useCaseGroupBuilder.addEffect(it.effect) }
 
-            val tenBitSupported = checkTenBitCapability(targetLens?.cameraId)
+            val tenBitSupported = runCatching {
+                baseSelector.filter(provider.availableCameraInfos).firstOrNull()
+                    ?.querySupportedDynamicRanges(setOf(DynamicRange.HLG_10_BIT))
+                    ?.contains(DynamicRange.HLG_10_BIT) == true
+            }.getOrDefault(false)
             _hlg10Supported.value = tenBitSupported
 
             val supportedQualities = querySupportedCamcorderQualities(targetLens?.cameraId, videoResolution)
@@ -459,17 +485,21 @@ class CameraController(private val context: Context) {
             if (isVideoMode) {
                 if (supportedQualities.isNotEmpty()) {
                     videoPipelineAvailable = true
-                    val qualitySelector = QualitySelector.fromOrderedList(supportedQualities)
+                    // A fallback list can silently turn a requested UHD clip into FHD when
+                    // combined with analysis/preview. Fail binding rather than mislabel output.
+                    val qualitySelector = QualitySelector.from(supportedQualities.first())
                     val recorder = Recorder.Builder()
                         .setQualitySelector(qualitySelector)
                         .setTargetVideoEncodingBitRate(videoBitrate.mbps * 1_000_000)
                         .build()
 
                     val vidCapBuilder = VideoCapture.Builder(recorder)
+                        .setTargetFrameRate(Range(videoFps.fps, videoFps.fps))
                         .setVideoStabilizationEnabled(stabilizationMode != StabilizationMode.OFF)
 
-                    if (videoCodecFormat == VideoCodecFormat.HLG_10BIT && tenBitSupported) {
-                        runCatching { vidCapBuilder.setDynamicRange(DynamicRange.HLG_10_BIT) }
+                    if (videoCodecFormat == VideoCodecFormat.HLG_10BIT) {
+                        check(tenBitSupported) { "HLG 10-bit is unavailable on this camera; select SDR MP4" }
+                        vidCapBuilder.setDynamicRange(DynamicRange.HLG_10_BIT)
                     }
                     val vidCap = vidCapBuilder.build()
                     videoCapture = vidCap
@@ -513,13 +543,36 @@ class CameraController(private val context: Context) {
             }
 
             provider.unbindAll()
+            logVideoEffect?.retire()
+            logVideoEffect = newLogEffect
 
-            val camera = provider.bindToLifecycle(
-                lifecycleOwner,
-                finalSelector,
-                useCaseGroupBuilder.build()
-            )
+            val camera = try {
+                provider.bindToLifecycle(lifecycleOwner, finalSelector, useCaseGroupBuilder.build())
+            } catch (unsupported: IllegalArgumentException) {
+                val recordingUseCase = videoCapture
+                if (!isVideoMode || recordingUseCase == null) throw unsupported
+                // Some devices cannot expose analysis alongside the requested encoder stream.
+                // Preserve recording geometry, not a silent lower-quality recording fallback.
+                provider.unbindAll()
+                imageAnalysis.clearAnalyzer()
+                frameAnalyzer.clear()
+                provider.bindToLifecycle(lifecycleOwner, finalSelector,
+                    UseCaseGroup.Builder().addUseCase(preview).addUseCase(recordingUseCase)
+                        .apply { newLogEffect?.let { addEffect(it.effect) } }.build())
+                    .also { _cameraNotice.value = "Live scopes, peaking and analysis overlays unavailable with this recording configuration" }
+            }
             activeCamera = camera
+            _liveAnalysisAvailable.value = _cameraNotice.value == null
+
+            if (isVideoMode && !videoResolution.isOpenGate) {
+                val actual = videoCapture?.resolutionInfo?.resolution
+                check(actual != null && VideoOutputGeometry.matches(
+                    videoResolution.width, videoResolution.height, actual.width, actual.height
+                )) {
+                    "Requested ${videoResolution.shortLabel} is unavailable with this camera configuration" +
+                        (actual?.let { " (negotiated ${it.width}×${it.height}); choose another resolution or stabilization mode" } ?: "")
+                }
+            }
 
             val expState = camera.cameraInfo.exposureState
             val evRange = expState.exposureCompensationRange
@@ -540,7 +593,12 @@ class CameraController(private val context: Context) {
             }
             applyCamera2ManualControls(exposure, stabilizationMode)
         } catch (t: Throwable) {
+            android.util.Log.e("IrisICamera", "Camera session binding failed", t)
+            videoPipelineAvailable = false
+            videoCapture = null
             _cameraError.value = t.localizedMessage ?: "Camera initialization unavailable"
+            _liveAnalysisAvailable.value = false
+            frameAnalyzer.clear()
         }
     }
 
@@ -858,10 +916,12 @@ class CameraController(private val context: Context) {
         grading: ColorGradingSettings,
         onProgress: (current: Int, total: Int, label: String) -> Unit,
         onComplete: (CaptureCompletion) -> Unit,
-        onError: (String) -> Unit
+        onError: (String) -> Unit,
+        onFinished: () -> Unit = {}
     ) {
         val cap = imageCapture ?: run {
             onError("Camera still pipeline not ready")
+            onFinished()
             return
         }
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
@@ -915,10 +975,12 @@ class CameraController(private val context: Context) {
                                     formatBadge = "DNG+JPG"
                                 )
                             )
+                            onFinished()
                         }
 
                         override fun onError(exception: ImageCaptureException) {
                             onError(exception.localizedMessage ?: "RAW+JPEG capture failed")
+                            onFinished()
                         }
                     }
                 )
@@ -936,10 +998,12 @@ class CameraController(private val context: Context) {
                                     formatBadge = "DNG"
                                 )
                             )
+                            onFinished()
                         }
 
                         override fun onError(exception: ImageCaptureException) {
                             onError(exception.localizedMessage ?: "RAW DNG capture failed")
+                            onFinished()
                         }
                     }
                 )
@@ -987,8 +1051,10 @@ class CameraController(private val context: Context) {
                                         fileBytes = saved.second
                                     )
                                 )
+                                onFinished()
                             } else {
                                 onError("Failed saving Night stack")
+                                onFinished()
                             }
                         }
                     }
@@ -1036,8 +1102,10 @@ class CameraController(private val context: Context) {
                                         fileBytes = saved.second
                                     )
                                 )
+                                onFinished()
                             } else {
                                 onError("Failed saving HDR composite")
+                                onFinished()
                             }
                         }
                     }
@@ -1085,8 +1153,10 @@ class CameraController(private val context: Context) {
                                         fileBytes = saved.second
                                     )
                                 )
+                                onFinished()
                             } else {
                                 onError("Failed saving focus-stacked composite")
+                                onFinished()
                             }
                         }
                     }
@@ -1104,6 +1174,14 @@ class CameraController(private val context: Context) {
                             frame.recycle()
                             val saved = saveBitmapToMediaStore(graded, "${baseName}_B$i.jpg")
                             graded.recycle()
+                            if (saved == null) {
+                                withContext(Dispatchers.Main) {
+                                    onProgress(0, 0, "")
+                                    onError("Failed saving burst frame $i/$burstTotal")
+                                    onFinished()
+                                }
+                                return@launch
+                            }
                             if (i == burstTotal && saved != null) {
                                 withContext(Dispatchers.Main) {
                                     onProgress(0, 0, "")
@@ -1116,6 +1194,7 @@ class CameraController(private val context: Context) {
                                             fileBytes = saved.second
                                         )
                                     )
+                                    onFinished()
                                 }
                             }
                         }
@@ -1142,16 +1221,22 @@ class CameraController(private val context: Context) {
                                         fileBytes = saved.second
                                     )
                                 )
+                                onFinished()
                             } else {
                                 onError("Failed to encode graded photo")
+                                onFinished()
                             }
                         }
                     }
                 }
             } catch (t: Throwable) {
                 withContext(Dispatchers.Main) {
+                    // A failed/cancelled bracket or focus stack must not leave altered
+                    // sensor controls active for the next user capture.
+                    applyCamera2ManualControls(exposure, stabilizationMode)
                     onProgress(0, 0, "")
                     onError(t.localizedMessage ?: "Capture failed")
+                    onFinished()
                 }
             }
         }
@@ -1168,19 +1253,26 @@ class CameraController(private val context: Context) {
         }
         val resolver = context.contentResolver
         val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
-        val bos = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 96, bos)
-        val bytes = bos.toByteArray()
-        resolver.openOutputStream(uri)?.use { out ->
-            out.write(bytes)
+        return try {
+            val bos = ByteArrayOutputStream()
+            check(bitmap.compress(Bitmap.CompressFormat.JPEG, 96, bos)) { "JPEG encoding failed" }
+            val bytes = bos.toByteArray()
+            check(bytes.isNotEmpty()) { "JPEG encoder returned no data" }
+            checkNotNull(resolver.openOutputStream(uri, "w")) { "Could not open MediaStore output" }.use { out ->
+                out.write(bytes)
+                out.flush()
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val published = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
+                check(resolver.update(uri, published, null, null) == 1) { "Could not publish image" }
+            }
+            refreshStorageAndCapabilities()
+            uri to bytes.size.toLong()
+        } catch (_: Throwable) {
+            // Never leave a broken pending row behind when encoding or provider IO fails.
+            runCatching { resolver.delete(uri, null, null) }
+            null
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            values.clear()
-            values.put(MediaStore.Images.Media.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-        }
-        refreshStorageAndCapabilities()
-        return uri to bytes.size.toLong()
     }
 
     fun pauseOrResumeRecording() {
@@ -1189,6 +1281,71 @@ class CameraController(private val context: Context) {
             rec.resume()
         } else {
             rec.pause()
+        }
+    }
+
+    /** Starts the experimental sequential DNG workflow after releasing CameraX surfaces. */
+    fun toggleRawSequenceRecording(
+        config: RawSequenceRecorder.Config,
+        onStarted: () -> Unit = {},
+        onComplete: (CaptureCompletion) -> Unit,
+        onError: (String) -> Unit,
+        onFinished: () -> Unit
+    ) {
+        val lens = _selectedLens.value
+        if (lens == null || !lens.supportsRaw) {
+            onError("Selected camera does not expose a RAW_SENSOR stream")
+            onFinished()
+            return
+        }
+        val existing = rawSequenceRecorder
+        if (existing != null) {
+            existing.stop()
+            return
+        }
+        val provider = cameraProvider
+        if (provider == null) {
+            onError("Camera session is not ready")
+            onFinished()
+            return
+        }
+        provider.unbindAll()
+        _liveAnalysisAvailable.value = false
+        val recorder = RawSequenceRecorder(context)
+        rawSequenceRecorder = recorder
+        recorder.start(lens.cameraId, config, onStarted) { result ->
+            // Retain the recorder until archive finalization; repeated stop must not start another capture.
+            try {
+            if (result.frames > 0) {
+                val archive = File(result.directory.parentFile, "${result.directory.name}.zip")
+                val partialArchive = File(result.directory.parentFile, "${result.directory.name}.zip.part")
+                val archived = runCatching {
+                    ZipOutputStream(partialArchive.outputStream().buffered()).use { zip ->
+                        result.directory.walkTopDown().filter { it.isFile && !it.name.endsWith(".part") }.forEach { file ->
+                            zip.putNextEntry(ZipEntry("${result.directory.name}/${file.relativeTo(result.directory).path.replace(File.separatorChar, '/') }"))
+                            file.inputStream().use { it.copyTo(zip) }
+                            zip.closeEntry()
+                        }
+                    }
+                    check(partialArchive.renameTo(archive)) { "Could not finalize DNG archive" }
+                }.isSuccess
+                if (archived) {
+                    onComplete(
+                        CaptureCompletion(
+                            uriString = archive.toURI().toString(),
+                            displayName = archive.name,
+                            isVideo = true,
+                            formatBadge = "DNG SEQ ${result.frames}F",
+                            fileBytes = archive.length()
+                        )
+                    )
+                } else onError("Could not archive DNG sequence")
+            }
+            result.error?.let(onError)
+            } finally {
+                rawSequenceRecorder = null
+                onFinished()
+            }
         }
     }
 
@@ -1203,12 +1360,14 @@ class CameraController(private val context: Context) {
         onComplete: (CaptureCompletion) -> Unit,
         onError: (String) -> Unit
     ) {
+        if (videoCodecFormat == VideoCodecFormat.RAW_CINEMA_DNG) {
+            onError("DNG sequence capture must use the RAW_SENSOR recorder")
+            return
+        }
         if (_isRecording.value) {
             activeRecording?.stop()
             activeRecording = null
-            _isRecording.value = false
-            _isRecordingPaused.value = false
-            onRecordingStateChanged(false)
+            // Keep configuration locked until CameraX has finalized the file.
             return
         }
 
@@ -1235,6 +1394,7 @@ class CameraController(private val context: Context) {
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         ).setContentValues(values).build()
 
+        try {
         var pending = vidCap.output.prepareRecording(context, mediaStoreOutput)
         if (audioGranted) {
             onRecordingStateChanged(true)
@@ -1245,6 +1405,7 @@ class CameraController(private val context: Context) {
         _recordedBytes.value = 0L
         _isRecordingPaused.value = false
 
+        _isRecording.value = true
         activeRecording = pending.start(ContextCompat.getMainExecutor(context)) { event ->
             when (event) {
                 is VideoRecordEvent.Start -> {
@@ -1268,13 +1429,28 @@ class CameraController(private val context: Context) {
                     }
                 }
                 is VideoRecordEvent.Finalize -> {
-                    _isRecording.value = false
+                    activeRecording = null
+                    _isRecording.value = videoCodecFormat == VideoCodecFormat.IRISI_LOG_8 && !event.hasError()
                     _isRecordingPaused.value = false
                     onRecordingStateChanged(false)
                     refreshStorageAndCapabilities()
                     if (event.hasError()) {
                         onError("Video recording stopped with code ${event.error}")
                     } else {
+                        if (videoCodecFormat == VideoCodecFormat.IRISI_LOG_8) {
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    LogVideoFinalizer.finalize(context, event.outputResults.outputUri, displayName)
+                                    withContext(Dispatchers.Main) {
+                                        onComplete(CaptureCompletion(event.outputResults.outputUri.toString(), displayName,
+                                            true, videoCodecFormat.shortLabel, _recordingDurationMs.value, _recordedBytes.value))
+                                    }
+                                } catch (error: Exception) {
+                                    withContext(Dispatchers.Main) { onError("LOG finalization failed; inspect original/recovery clip: ${error.message}") }
+                                } finally { _isRecording.value = false }
+                            }
+                            return@start
+                        }
                         if (isRawVideo) {
                             scope.launch(Dispatchers.IO) {
                                 runCatching {
@@ -1299,10 +1475,20 @@ class CameraController(private val context: Context) {
                 }
             }
         }
+        } catch (t: Exception) {
+            activeRecording = null
+            _isRecording.value = false
+            _isRecordingPaused.value = false
+            onRecordingStateChanged(false)
+            onError(t.localizedMessage ?: "Could not start video recording")
+        }
     }
 
     fun release() {
         runCatching { activeRecording?.stop() }
+        runCatching { rawSequenceRecorder?.close() }
+        cameraProvider?.unbindAll()
+        logVideoEffect?.retire()
         cameraExecutor.shutdown()
     }
 

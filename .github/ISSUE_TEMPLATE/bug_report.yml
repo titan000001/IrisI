@@ -1,0 +1,28 @@
+name: Camera bug
+description: Report a reproducible behavior or capture failure.
+title: "[Bug] "
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Include the steps, capture mode and requested settings.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and Android version
+      placeholder: Pixel 7 Pro, Android version, physical device or emulator
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build or commit
+      description: Include an APK checksum if available.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Logs or measured output help. Remove personal captures, location data, identifiers and credentials.

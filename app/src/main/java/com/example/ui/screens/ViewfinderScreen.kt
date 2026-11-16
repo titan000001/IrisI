@@ -36,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +49,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -66,6 +72,38 @@ import com.example.viewmodel.ActiveSheet
 import com.example.viewmodel.CineRigUiState
 import com.example.viewmodel.CineRigViewModel
 import kotlin.random.Random
+
+@Composable
+internal fun CameraSessionErrorBanner(message: String?) {
+    if (message.isNullOrBlank()) return
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }
+    ) {
+        Text(
+            text = "Camera: $message",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+        )
+    }
+}
+
+@Composable
+internal fun CameraCapabilityNotice(message: String?) {
+    if (message.isNullOrBlank()) return
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }
+    ) {
+        Text(
+            text = "Monitoring: $message",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+        )
+    }
+}
 
 @Composable
 fun ViewfinderScreen(
@@ -159,7 +197,7 @@ fun ViewfinderScreen(
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .background(ObsidianBackground)
+                .background(MaterialTheme.colorScheme.background)
                 .statusBarsPadding()
                 .navigationBarsPadding()
         ) {
@@ -175,6 +213,8 @@ fun ViewfinderScreen(
                     viewModel = viewModel,
                     onEditWidget = { widgetBeingEdited = it }
                 )
+                CameraSessionErrorBanner(state.cameraError)
+                CameraCapabilityNotice(state.cameraNotice)
                 OpticalViewfinderCanvas(
                     state = state,
                     animatedAspect = animatedAspect,
@@ -213,7 +253,7 @@ fun ViewfinderScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(ObsidianBackground)
+                .background(MaterialTheme.colorScheme.background)
                 .statusBarsPadding()
                 .navigationBarsPadding(),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -225,6 +265,9 @@ fun ViewfinderScreen(
                 viewModel = viewModel,
                 onEditWidget = { widgetBeingEdited = it }
             )
+
+            CameraSessionErrorBanner(state.cameraError)
+            CameraCapabilityNotice(state.cameraNotice)
 
             OpticalViewfinderCanvas(
                 state = state,
@@ -389,7 +432,7 @@ private fun TopHudBar(
                         val durText = CineRigViewModel.formatDuration(state.recordingDurationMs)
                         val sizeText = CineRigViewModel.formatBytes(state.recordedBytes)
                         val rawSuffix = if (state.videoCodecFormat == VideoCodecFormat.RAW_CINEMA_DNG) {
-                            " • PRO MP4"
+                            " • DNG SEQ"
                         } else ""
                         Text(
                             text = "$prefix $durText • $sizeText$rawSuffix",
@@ -569,7 +612,7 @@ private fun OpticalViewfinderCanvas(
     onEditWidget: (HudWidgetId) -> Unit,
     viewModel: CineRigViewModel,
     modifier: Modifier = Modifier
-) {
+) = CineRigTheme(darkTheme = true) {
     val lifecycleOwner = LocalLifecycleOwner.current
     var viewfinderSize by remember { mutableStateOf(IntSize(1, 1)) }
     var tapReticlePos by remember { mutableStateOf<Offset?>(null) }
@@ -695,7 +738,7 @@ private fun OpticalViewfinderCanvas(
             }
 
             // False Color Exposure Overlay
-            if (state.falseColorEnabled && state.falseColorBitmap != null && !state.falseColorBitmap.isRecycled) {
+            if (state.liveAnalysisAvailable && state.falseColorEnabled && state.falseColorBitmap != null && !state.falseColorBitmap.isRecycled) {
                 Image(
                     bitmap = state.falseColorBitmap.asImageBitmap(),
                     contentDescription = "False Color exposure map",
@@ -706,7 +749,7 @@ private fun OpticalViewfinderCanvas(
             }
 
             // Zebra Over-Exposure Stripe Overlay
-            if (state.zebraEnabled && state.zebraBitmap != null && !state.zebraBitmap.isRecycled) {
+            if (state.liveAnalysisAvailable && state.zebraEnabled && state.zebraBitmap != null && !state.zebraBitmap.isRecycled) {
                 Image(
                     bitmap = state.zebraBitmap.asImageBitmap(),
                     contentDescription = "Zebra clipping pattern",
@@ -717,7 +760,7 @@ private fun OpticalViewfinderCanvas(
             }
 
             // Focus Peaking Edge Overlay
-            if (state.focusPeakingEnabled && state.peakingBitmap != null && !state.peakingBitmap.isRecycled) {
+            if (state.liveAnalysisAvailable && state.focusPeakingEnabled && state.peakingBitmap != null && !state.peakingBitmap.isRecycled) {
                 Image(
                     bitmap = state.peakingBitmap.asImageBitmap(),
                     contentDescription = "Focus peaking highlight",
@@ -781,7 +824,7 @@ private fun OpticalViewfinderCanvas(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     horizontalAlignment = Alignment.Start
                 ) {
-                    if (state.scopeMode != MonitorScopeMode.OFF && !scopeAlreadyShownInDock) {
+                    if (state.liveAnalysisAvailable && state.scopeMode != MonitorScopeMode.OFF && !scopeAlreadyShownInDock) {
                         MonitorScopeWidget(
                             scopeMode = state.scopeMode,
                             data = state.histogramData,
@@ -830,7 +873,7 @@ private fun OpticalViewfinderCanvas(
                 }
             }
 
-            if (state.falseColorEnabled) {
+            if (state.liveAnalysisAvailable && state.falseColorEnabled) {
                 FalseColorLegendBar(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
@@ -839,7 +882,7 @@ private fun OpticalViewfinderCanvas(
             }
 
             AnimatedVisibility(
-                visible = state.focusMagnifierEnabled,
+                visible = state.liveAnalysisAvailable && state.focusMagnifierEnabled,
                 enter = fadeIn(),
                 exit = fadeOut(),
                 modifier = Modifier
@@ -974,6 +1017,10 @@ private fun CameraConsoleSection(
     isColorWorkbenchOpen: Boolean,
     viewModel: CineRigViewModel
 ) {
+    var toolsExpanded by rememberSaveable(state.captureMode) { mutableStateOf(false) }
+    LaunchedEffect(state.manualDeckExpanded, state.isRecording) {
+        if (state.manualDeckExpanded || state.isRecording) toolsExpanded = false
+    }
     if (isColorWorkbenchOpen) {
         ColorScienceWorkbench(
             state = state,
@@ -1005,7 +1052,42 @@ private fun CameraConsoleSection(
             onToggleZoomSlider = viewModel::toggleZoomSlider
         )
 
-        ModeUniqueQuickStrip(state = state, viewModel = viewModel)
+        AnimatedVisibility(visible = toolsExpanded && !state.manualDeckExpanded) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).testTag("camera_tools_panel")
+            ) {
+                Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Capture tools", style = MaterialTheme.typography.titleSmall)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = viewModel::cycleScopeMode,
+                                modifier = Modifier.testTag("photo_hist_quick_btn")
+                            ) {
+                                Icon(Icons.Rounded.BarChart, "Cycle live exposure scope",
+                                    tint = if (state.scopeMode != MonitorScopeMode.OFF) CinemaAmber else MaterialTheme.colorScheme.onSurface)
+                            }
+                            if (!isPhotoOrNight && state.captureMode != CaptureMode.RAW_VIDEO) {
+                                IconButton(
+                                    onClick = { viewModel.openSheet(ActiveSheet.AUDIO_MONITOR) },
+                                    modifier = Modifier.testTag("audio_monitor_button")
+                                ) { Icon(Icons.Rounded.GraphicEq, stringResource(R.string.audio_monitor_button_desc)) }
+                            }
+                            IconButton(onClick = { toolsExpanded = false }) {
+                                Icon(Icons.Rounded.Close, "Close capture tools")
+                            }
+                        }
+                    }
+                    ModeUniqueQuickStrip(state = state, viewModel = viewModel)
+                }
+            }
+        }
 
         ManualControlsDeck(
             state = state,
@@ -1027,7 +1109,7 @@ private fun CameraConsoleSection(
                 val selected = state.captureMode == mode
                 Surface(
                     modifier = Modifier
-                        .defaultMinSize(minHeight = 32.dp)
+                        .defaultMinSize(minHeight = 48.dp)
                         .testTag("mode_tab_${mode.name}")
                         .clickable(enabled = !state.isRecording) { viewModel.setCaptureMode(mode) },
                     shape = CircleShape,
@@ -1122,7 +1204,8 @@ private fun CameraConsoleSection(
 
             // 3. Expressive Material 3 Shutter / Record Button
             val isVideoMode = state.captureMode == CaptureMode.VIDEO || state.captureMode == CaptureMode.RAW_VIDEO
-            val isActiveCapture = state.isRecording || state.intervalActive
+            val isActiveCapture = state.isRecording || state.intervalActive ||
+                (state.captureMode == CaptureMode.RAW_VIDEO && state.isCapturing)
             val innerSize by animateDpAsState(
                 targetValue = if (isActiveCapture) 26.dp else 54.dp,
                 animationSpec = spring(),
@@ -1138,22 +1221,23 @@ private fun CameraConsoleSection(
                     isVideoMode -> RecordRed
                     state.intervalActive -> CinemaAmber
                     state.captureMode == CaptureMode.NIGHT -> Color(0xFF94B8FF)
-                    else -> Color.White
+                    else -> MaterialTheme.colorScheme.onSurface
                 },
                 label = "shutterInnerColor"
             )
             val ringColor = when (state.captureMode) {
                 CaptureMode.NIGHT -> Color(0xFF94B8FF).copy(alpha = 0.85f)
                 CaptureMode.RAW_VIDEO -> CinemaAmber.copy(alpha = 0.9f)
-                else -> Color.White.copy(alpha = 0.88f)
+                else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f)
             }
 
             Box(
                 modifier = Modifier
-                    .size(70.dp)
+                    .size(72.dp)
                     .clip(CircleShape)
                     .border(3.dp, ringColor, CircleShape)
-                    .clickable { viewModel.triggerCapture() }
+                    .semantics { contentDescription = if (isActiveCapture) "Stop capture" else "Start capture" }
+                    .clickable(enabled = !state.isCapturing || state.intervalActive || state.captureMode == CaptureMode.RAW_VIDEO) { viewModel.triggerCapture() }
                     .testTag("shutter_record_button"),
                 contentAlignment = Alignment.Center
             ) {
@@ -1188,41 +1272,19 @@ private fun CameraConsoleSection(
                 )
             }
 
-            // 5. Far Right: Scopes Cycle (Photo/Night) or Audio Mic Monitor (Video/RAW Video)
-            if (isPhotoOrNight) {
-                IconButton(
-                    onClick = viewModel::cycleScopeMode,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                        .testTag("photo_hist_quick_btn")
-                ) {
-                    Icon(
-                        Icons.Rounded.BarChart,
-                        contentDescription = "Cycle live exposure scope",
-                        tint = if (state.scopeMode != MonitorScopeMode.OFF) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            } else {
-                IconButton(
-                    onClick = { viewModel.openSheet(ActiveSheet.AUDIO_MONITOR) },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                        .testTag("audio_monitor_button")
-                ) {
-                    Icon(
-                        Icons.Rounded.GraphicEq,
-                        contentDescription = stringResource(R.string.audio_monitor_button_desc),
-                        tint = if (state.audioDevices.any { it.isExternal }) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        }
-                    )
-                }
+            // Specialist controls are disclosed on demand, not permanent preview-consuming rows.
+            IconButton(
+                onClick = { toolsExpanded = !toolsExpanded },
+                enabled = !state.manualDeckExpanded,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(if (toolsExpanded) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .semantics { stateDescription = if (toolsExpanded) "Expanded" else "Collapsed" }
+                    .testTag("camera_tools_toggle")
+            ) {
+                Icon(Icons.Rounded.MoreHoriz, "Capture tools",
+                    tint = if (toolsExpanded) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface)
             }
         }
     }

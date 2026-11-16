@@ -217,13 +217,19 @@ fun VideoAndStabSheet(
                 }
                 if (state.videoResolution.isBinned) {
                     Text(
-                        "2×2 pixel-binned 4:3 readout (~2016×1512): preserves full sensor height with lower rolling shutter and cooler thermals.",
+                        "Requests a smaller 4:3 output. Sensor binning, full-height readout and thermal improvements are not guaranteed.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
 
                 Text("Video Encoding & RAW Pipeline", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (state.captureMode == CaptureMode.RAW_VIDEO)
+                        "DNG still sequence: up to 60 frames / 10 seconds, requested rate capped at 10 fps. ZIP archive, no audio; actual cadence is device-limited. Resolution selects the nearest RAW size. Video bitrate, stabilization and monitor grading do not alter DNG data."
+                    else "MP4 codec is selected by CameraX/device capabilities. Tone curves affect monitoring only, not encoded LOG. Frame rate is a request (maximum 60 fps); output size may fall back to a supported profile.",
+                    style = MaterialTheme.typography.bodySmall
+                )
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     VideoCodecFormat.entries.forEach { codec ->
                         val selected = state.videoCodecFormat == codec
@@ -256,7 +262,7 @@ fun VideoAndStabSheet(
                                 if (codec == VideoCodecFormat.HLG_10BIT) {
                                     AssistChip(
                                         onClick = { onSelectCodec(codec) },
-                                        label = { Text(if (state.hlg10Supported) "HW 10-BIT" else "SW MAP") }
+                                        label = { Text(if (state.hlg10Supported) "CHECK DEVICE" else "UNAVAILABLE") }
                                     )
                                 }
                             }
@@ -264,10 +270,11 @@ fun VideoAndStabSheet(
                     }
                 }
 
-                Text("Frame Rate (Slow-Mo @ 60p/120p)", style = MaterialTheme.typography.titleSmall)
+                Text("Requested Frame Rate", style = MaterialTheme.typography.titleSmall)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     VideoFps.entries.forEach { fps ->
                         FilterChip(
+                            enabled = fps.fps <= 60 && !state.isRecording && !state.isCapturing,
                             selected = state.videoFps == fps,
                             onClick = { onSelectFps(fps) },
                             label = { Text(fps.label) },

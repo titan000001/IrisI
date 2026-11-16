@@ -1,6 +1,7 @@
 package com.example.ui.sheets
 
 import android.content.Intent
+import android.content.ClipData
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ColorMatrixColorFilter
@@ -35,6 +36,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.camera.ColorEngine
+import com.example.camera.LogRecoveryClip
+import com.example.camera.LogRecoveryFiles
+import com.example.data.local.MediaShareUris
+import com.example.data.local.MediaShareIntents
 import com.example.data.local.CapturedMediaEntity
 import com.example.model.DevelopSettings
 import com.example.model.FilmPreset
@@ -43,7 +48,9 @@ import com.example.ui.theme.CinemaAmber
 import com.example.viewmodel.CineRigUiState
 import com.example.viewmodel.CineRigViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private enum class LibraryFilter(val label: String) {
     ALL("All"),
@@ -68,6 +75,19 @@ fun MediaLibrarySheet(
     var batchSelectionMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     var exifTarget by remember { mutableStateOf<Pair<CapturedMediaEntity, List<Pair<String, String>>>?>(null) }
+    var recoveryError by remember { mutableStateOf<String?>(null) }
+    val recoveryClips by produceState<List<LogRecoveryClip>>(emptyList(), context, state.isRecording) {
+        recoveryError = null
+        // A backup can exist transiently during an active commit. Only offer idle recovery files.
+        value = if (state.isRecording) emptyList() else try {
+            withContext(Dispatchers.IO) { LogRecoveryFiles.list(File(context.filesDir, "log_recovery")) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            recoveryError = "Retained LOG originals could not be read. Reopen the library to retry."
+            emptyList()
+        }
+    }
 
     val filtered = remember(state.mediaLogs, searchQuery, activeFilter) {
         state.mediaLogs.filter { item ->
@@ -125,6 +145,23 @@ fun MediaLibrarySheet(
                 }
             }
 
+            recoveryError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            LogRecoverySection(recoveryClips) { clip ->
+                runCatching {
+                    val uri = MediaShareUris.recoveryOriginal(context, clip.fileName)
+                    val share = Intent(Intent.ACTION_SEND).apply {
+                        type = "video/mp4"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        putExtra(Intent.EXTRA_TEXT, "IrisI retained LOG original. Unfinalized custom LOG; transfer tags may be incorrect.")
+                        clipData = ClipData.newRawUri(clip.originalDisplayName, uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(share, "Share retained LOG original"))
+                }.onFailure {
+                    android.widget.Toast.makeText(context, "Recovery original could not be shared; it has not been removed", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+
             if (batchSelectionMode && selectedIds.isNotEmpty()) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -132,17 +169,12 @@ fun MediaLibrarySheet(
                 ) {
                     FilledTonalButton(
                         onClick = {
-                            val uris = ArrayList(
-                                state.mediaLogs.filter { it.id in selectedIds && it.uriString.isNotBlank() }
-                                    .map { Uri.parse(it.uriString) }
-                            )
-                            if (uris.isNotEmpty()) {
-                                val share = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                                    type = "*/*"
-                                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                                runCatching { context.startActivity(Intent.createChooser(share, "Share ${uris.size} items")) }
+                            runCatching {
+                                val selected = state.mediaLogs.filter { it.id in selectedIds }
+                                val share = MediaShareIntents.create(context, selected)
+                                context.startActivity(Intent.createChooser(share, "Share ${selected.size} items"))
+                            }.onFailure {
+                                android.widget.Toast.makeText(context, "Selected media could not be shared", android.widget.Toast.LENGTH_SHORT).show()
                             }
                         },
                         modifier = Modifier.weight(1f)
@@ -161,7 +193,7 @@ fun MediaLibrarySheet(
                     ) {
                         Icon(Icons.Rounded.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Remove Logs")
+                        Text("Delete Selected")
                     }
                 }
             }
@@ -201,7 +233,7 @@ fun MediaLibrarySheet(
                         Icon(Icons.Rounded.PhotoLibrary, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Text("No Matching Local Media", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "Photos, DNG RAW files, and Log videos saved locally appear here with full EXIF telemetry.",
+                            "IrisI captures in the app’s photo and video folders appear here. Imported or unsupported media may not include capture telemetry.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -225,8 +257,12 @@ fun MediaLibrarySheet(
                                     runCatching {
                                         val intent = Intent(Intent.ACTION_VIEW).apply {
                                             setDataAndType(
-                                                Uri.parse(item.uriString),
-                                                if (item.isVideo) "video/*" else "image/*"
+                                                com.example.data.local.MediaShareUris.resolve(context, item.uriString),
+                                                when {
+                                                    item.formatBadge.startsWith("DNG SEQ") -> "application/zip"
+                                                    item.isVideo -> "video/*"
+                                                    else -> "image/*"
+                                                }
                                             )
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
@@ -242,12 +278,12 @@ fun MediaLibrarySheet(
                             onDevelop = { onOpenDevelop(item) },
                             onShare = {
                                 if (item.uriString.isNotBlank()) {
-                                    val share = Intent(Intent.ACTION_SEND).apply {
-                                        type = if (item.isVideo) "video/*" else "image/*"
-                                        putExtra(Intent.EXTRA_STREAM, Uri.parse(item.uriString))
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    runCatching {
+                                    val share = MediaShareIntents.create(context, listOf(item))
+                                    context.startActivity(Intent.createChooser(share, "Share ${item.displayName}"))
+                                    }.onFailure {
+                                        android.widget.Toast.makeText(context, "Media could not be shared", android.widget.Toast.LENGTH_SHORT).show()
                                     }
-                                    runCatching { context.startActivity(Intent.createChooser(share, "Share ${item.displayName}")) }
                                 }
                             },
                             onDelete = { onDeleteLog(item.id) }
@@ -363,11 +399,11 @@ private fun MediaCardRow(
                 if (batchMode) {
                     Checkbox(checked = selected, onCheckedChange = { onTap() })
                 } else {
-                    IconButton(onClick = onToggleFavorite) {
+                    IconButton(onClick = onToggleFavorite, enabled = item.id > 0L) {
                         Icon(
                             imageVector = if (item.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                            contentDescription = "Favorite",
-                            tint = if (item.isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            contentDescription = if (item.id > 0L) "Favorite" else "Favorites are available for IrisI captures",
+                            tint = if (item.id > 0L && item.isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }

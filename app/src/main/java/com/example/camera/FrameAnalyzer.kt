@@ -39,7 +39,20 @@ class FrameAnalyzer(
 
     private var lastAnalyzedMs = 0L
 
+    private val generation = AnalysisGeneration()
+
+    fun clear() = generation.invalidate { onResult(FrameAnalysisResult(HistogramData())) }
+
+    fun sessionAnalyzer(): ImageAnalysis.Analyzer {
+        val session = generation.snapshot()
+        return ImageAnalysis.Analyzer { image -> analyze(image, session) }
+    }
+
     override fun analyze(image: ImageProxy) {
+        analyze(image, generation.snapshot())
+    }
+
+    private fun analyze(image: ImageProxy, session: Long) {
         try {
             val now = System.currentTimeMillis()
             if (now - lastAnalyzedMs < 65L) return
@@ -297,7 +310,11 @@ class FrameAnalyzer(
                 loupeBmp = rotateBitmapIfNeeded(Bitmap.createBitmap(rgbPixels, outW, outH, Bitmap.Config.ARGB_8888), rotationDeg)
             }
 
-            onResult(FrameAnalysisResult(hist, peakingBmp, loupeBmp, zebraBmp, falseColorBmp))
+            if (!generation.publish(session) {
+                onResult(FrameAnalysisResult(hist, peakingBmp, loupeBmp, zebraBmp, falseColorBmp))
+            }) {
+                listOfNotNull(peakingBmp, loupeBmp, zebraBmp, falseColorBmp).forEach { it.recycle() }
+            }
         } catch (_: Throwable) {
             // Gracefully ignore transient buffer sizing errors during lens switches
         } finally {

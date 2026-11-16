@@ -14,18 +14,22 @@ import com.example.camera.ColorEngine
 import com.example.camera.EvBounds
 import com.example.camera.FrameAnalyzer
 import com.example.camera.HorizonLevelSensor
+import com.example.camera.RawSequenceRecorder
 import com.example.data.local.CameraPresetEntity
 import com.example.data.local.CapturedMediaEntity
 import com.example.data.local.CineRigDatabase
 import com.example.data.local.CineRigRepository
 import com.example.model.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -102,6 +106,7 @@ data class CineRigUiState(
     val selectedLens: LensInfo? = null,
     val zoomRatio: Float = 1f,
     val isRecording: Boolean = false,
+    val isCapturing: Boolean = false,
     val isRecordingPaused: Boolean = false,
     val recordingDurationMs: Long = 0L,
     val recordedBytes: Long = 0L,
@@ -110,6 +115,8 @@ data class CineRigUiState(
     val hlg10Supported: Boolean = false,
     val deviceCapabilities: DeviceHardwareCapabilities = DeviceHardwareCapabilities(),
     val cameraError: String? = null,
+    val cameraNotice: String? = null,
+    val liveAnalysisAvailable: Boolean = false,
     val histogramData: HistogramData = HistogramData(),
     val peakingBitmap: Bitmap? = null,
     val loupeBitmap: Bitmap? = null,
@@ -141,6 +148,7 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
 
     private val _uiState = MutableStateFlow(CineRigUiState())
     val uiState: StateFlow<CineRigUiState> = _uiState.asStateFlow()
+    private val discoveredMedia = MutableStateFlow<List<CapturedMediaEntity>>(emptyList())
 
     private var boundLifecycleOwner: LifecycleOwner? = null
     private var boundPreviewView: PreviewView? = null
@@ -204,6 +212,15 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun observeStreams() {
+        viewModelScope.launch {
+            combine(cameraController.cameraNotice, cameraController.liveAnalysisAvailable) { notice, available ->
+                notice to available
+            }.collect { (notice, available) ->
+                _uiState.update {
+                    it.copy(cameraNotice = notice, liveAnalysisAvailable = available)
+                }
+            }
+        }
         viewModelScope.launch {
             combine(
                 cameraController.discoveredLenses,
@@ -322,8 +339,8 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
                         layouts = layouts,
                         activeLayout = active,
                         presets = presets,
-                        mediaLogs = media,
-                        lastCapturedThumbUri = media.firstOrNull()?.uriString
+                        mediaLogs = mergeMediaLibrary(media),
+                        lastCapturedThumbUri = mergeMediaLibrary(media).firstOrNull()?.uriString
                     )
                 }
             }
@@ -352,6 +369,7 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun rebindSession() {
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         val owner = boundLifecycleOwner ?: return
         val pv = boundPreviewView ?: return
         if (!_uiState.value.cameraGranted) return
@@ -360,6 +378,7 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
         bindJob = viewModelScope.launch {
             delay(35L)
             val state = _uiState.value
+            if (state.isRecording || state.isCapturing) return@launch
             cameraController.bindCameraSession(
                 lifecycleOwner = owner,
                 previewView = pv,
@@ -380,9 +399,11 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setCaptureMode(mode: CaptureMode) {
-        if (_uiState.value.isRecording) return
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         stopIntervalometerIfRunning()
-        val nextCodec = if (mode == CaptureMode.RAW_VIDEO) VideoCodecFormat.RAW_CINEMA_DNG else _uiState.value.videoCodecFormat
+        val nextCodec = if (mode == CaptureMode.RAW_VIDEO) VideoCodecFormat.RAW_CINEMA_DNG
+            else if (_uiState.value.videoCodecFormat == VideoCodecFormat.RAW_CINEMA_DNG) VideoCodecFormat.HEVC_LOG
+            else _uiState.value.videoCodecFormat
         val nextNight = mode == CaptureMode.NIGHT
         _uiState.update {
             it.copy(
@@ -434,11 +455,13 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setPhotoFormat(format: PhotoFormat) {
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         _uiState.update { it.copy(photoFormat = format) }
         rebindSession()
     }
 
     fun cyclePhotoAspectRatio() {
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         val all = PhotoAspectRatio.entries
         val next = all[(all.indexOf(_uiState.value.photoAspectRatio) + 1) % all.size]
         _uiState.update { it.copy(photoAspectRatio = next, statusMessage = "Aspect Ratio: ${next.label}") }
@@ -473,27 +496,32 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setVideoCodecFormat(codec: VideoCodecFormat) {
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         val mode = if (codec == VideoCodecFormat.RAW_CINEMA_DNG) CaptureMode.RAW_VIDEO else CaptureMode.VIDEO
         _uiState.update { it.copy(videoCodecFormat = codec, captureMode = mode) }
         rebindSession()
     }
 
     fun setVideoResolution(res: VideoResolution) {
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         _uiState.update { it.copy(videoResolution = res) }
         rebindSession()
     }
 
     fun setVideoFps(fps: VideoFps) {
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         _uiState.update { it.copy(videoFps = fps) }
         rebindSession()
     }
 
     fun setVideoBitrate(bitrate: VideoBitrate) {
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         _uiState.update { it.copy(videoBitrate = bitrate) }
         rebindSession()
     }
 
     fun setStabilizationMode(mode: StabilizationMode) {
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         val updatedExposure = if (mode == StabilizationMode.ACTION && _uiState.value.exposure.isManualExposure) {
             val fastFloor = 8_333_333L
             if (_uiState.value.exposure.shutterSpeedNs > fastFloor) {
@@ -515,7 +543,7 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectLens(lens: LensInfo) {
-        if (_uiState.value.isRecording) return
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         cameraController.selectLens(lens)
         rebindSession()
     }
@@ -649,6 +677,7 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleNightBoost() {
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         _uiState.update { it.copy(nightBoostEnabled = !it.nightBoostEnabled) }
         rebindSession()
     }
@@ -677,6 +706,27 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
             cameraController.refreshStorageAndCapabilities()
         }
         _uiState.update { it.copy(activeSheet = sheet) }
+        if (sheet == ActiveSheet.VAULT) {
+            viewModelScope.launch {
+                try {
+                    discoveredMedia.value = repository.discoverOwnedMedia()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    _uiState.update { state -> state.copy(statusMessage = "Could not refresh local media") }
+                }
+                val current = repository.mediaLogs.firstOrNull()
+                if (current != null) _uiState.update {
+                    it.copy(mediaLogs = mergeMediaLibrary(current))
+                }
+            }
+        }
+    }
+
+    private fun mergeMediaLibrary(logs: List<CapturedMediaEntity>): List<CapturedMediaEntity> {
+        val loggedUris = logs.mapTo(HashSet()) { it.uriString }
+        return (logs + discoveredMedia.value.filter { it.uriString !in loggedUris })
+            .sortedByDescending { it.timestamp }
     }
 
     fun closeSheet() {
@@ -723,6 +773,30 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        if (state.captureMode == CaptureMode.RAW_VIDEO) {
+            bindJob?.cancel()
+            frameAnalyzer.clear()
+            _uiState.update { it.copy(isCapturing = true, statusMessage = if (!state.isCapturing) "Preparing DNG sequence…" else "Stopping DNG sequence…") }
+            cameraController.toggleRawSequenceRecording(
+                config = RawSequenceRecorder.Config(
+                    width = state.videoResolution.width,
+                    height = state.videoResolution.height,
+                    fps = state.videoFps.fps.coerceIn(1, 10),
+                    durationMs = 10_000,
+                    maxFrames = 60
+                ),
+                onStarted = { _uiState.update { it.copy(statusMessage = "Capturing sequential DNG frames…") } },
+                onComplete = { completion -> logMediaToVault(completion) },
+                onError = { err -> _uiState.update { it.copy(statusMessage = err) } },
+                onFinished = {
+                    _uiState.update { it.copy(isCapturing = false) }
+                    rebindSession()
+                }
+            )
+            return
+        }
+        if (state.isCapturing) return
+
         if (state.captureMode == CaptureMode.VIDEO || state.captureMode == CaptureMode.RAW_VIDEO) {
             cameraController.toggleVideoRecording(
                 scope = viewModelScope,
@@ -754,7 +828,10 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
                 _uiState.update { it.copy(intervalActive = true, intervalShotCount = 0) }
                 while (isActive) {
                     _uiState.update { it.copy(intervalShotCount = it.intervalShotCount + 1) }
-                    executePhotoCapture()
+                    val shotDone = CompletableDeferred<Unit>()
+                    executePhotoCapture { shotDone.complete(Unit) }
+                    shotDone.await()
+                    if (!isActive) break
                     delay(3000L)
                 }
             }
@@ -763,9 +840,9 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun executePhotoCapture() {
+    private fun executePhotoCapture(onFinished: () -> Unit = {}) {
         val state = _uiState.value
-        _uiState.update { it.copy(shutterFlashTick = it.shutterFlashTick + 1) }
+        _uiState.update { it.copy(shutterFlashTick = it.shutterFlashTick + 1, isCapturing = true) }
         cameraController.capturePhoto(
             scope = viewModelScope,
             photoFormat = state.photoFormat,
@@ -775,19 +852,23 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
             nightStackStyle = state.nightStackStyle,
             exposure = state.exposure,
             stabilizationMode = state.stabilizationMode,
-            logProfile = LogProfile.REC_709,
+            // The previous code always passed Rec.709, so selecting a profile in the
+            // color workbench changed the monitor but silently left processed stills unchanged.
+            // Pass the selected profile through the complete still-image processing path.
+            logProfile = state.logProfile,
             filmPreset = state.filmPreset,
             grading = state.colorGrading,
             onProgress = { _, _, label ->
                 _uiState.update { it.copy(captureProgressLabel = label.ifBlank { null }) }
             },
             onComplete = { completion ->
-                _uiState.update { it.copy(captureProgressLabel = null) }
+                _uiState.update { it.copy(captureProgressLabel = null, isCapturing = false) }
                 logMediaToVault(completion)
             },
             onError = { err ->
-                _uiState.update { it.copy(captureProgressLabel = null, statusMessage = err) }
-            }
+                _uiState.update { it.copy(captureProgressLabel = null, isCapturing = false, statusMessage = err) }
+            },
+            onFinished = onFinished
         )
     }
 
@@ -821,6 +902,7 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
 
     // Media Library & Non-Destructive RAW/Photo Develop Lab
     fun toggleMediaFavorite(item: CapturedMediaEntity) {
+        if (item.id < 0L) return
         viewModelScope.launch {
             repository.setMediaFavorite(item.id, !item.isFavorite)
         }
@@ -1050,6 +1132,7 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun applyPreset(preset: CameraPresetEntity) {
+        if (_uiState.value.isRecording || _uiState.value.isCapturing) return
         _uiState.update { state ->
             state.copy(
                 captureMode = enumOrDefault(preset.captureMode, state.captureMode),
@@ -1092,7 +1175,31 @@ class CineRigViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun deleteMediaLog(id: Long) {
-        viewModelScope.launch { repository.deleteMediaLog(id) }
+        viewModelScope.launch {
+            if (id < 0L) {
+                val item = discoveredMedia.value.firstOrNull { it.id == id } ?: return@launch
+                if (repository.deleteOwnedMedia(item.uriString)) {
+                    discoveredMedia.value = discoveredMedia.value.filterNot { it.id == id }
+                    val logs = repository.mediaLogs.firstOrNull().orEmpty()
+                    _uiState.update { it.copy(mediaLogs = mergeMediaLibrary(logs), statusMessage = "Deleted ${item.displayName}") }
+                } else {
+                    _uiState.update { it.copy(statusMessage = "Could not delete ${item.displayName}") }
+                }
+            } else {
+                val item = _uiState.value.mediaLogs.firstOrNull { it.id == id }
+                val deleted = item?.let { repository.deleteOwnedMedia(it.uriString) } == true
+                if (deleted) {
+                    repository.deleteMediaLog(id)
+                    discoveredMedia.value = discoveredMedia.value.filterNot { it.uriString == item?.uriString }
+                    val logs = repository.mediaLogs.firstOrNull().orEmpty()
+                    _uiState.update { it.copy(mediaLogs = mergeMediaLibrary(logs), statusMessage = "Deleted ${item?.displayName}") }
+                } else {
+                    // Explicitly retain the file if its ownership/provider identity cannot be
+                    // verified; merely hiding an item would make it reappear on the next scan.
+                    _uiState.update { it.copy(statusMessage = "File could not be verified for deletion") }
+                }
+            }
+        }
     }
 
     private inline fun <reified T : Enum<T>> enumOrDefault(name: String, default: T): T =

@@ -12,6 +12,9 @@ import com.example.model.ColorGradingSettings
 import com.example.model.DevelopSettings
 import com.example.model.FilmPreset
 import com.example.model.LogProfile
+import kotlinx.coroutines.runBlocking
+import java.io.File
+import java.io.IOException
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -339,9 +342,7 @@ object ColorEngine {
         return Bitmap.createBitmap(bestPixels, w, h, Bitmap.Config.ARGB_8888)
     }
 
-    /**
-     * Decodes JPEG or DNG URIs via ImageDecoder on API 28+ (backed by libdng_sdk) with BitmapFactory fallback.
-     */
+    /** Decodes supported photos with Android codecs, falling back to the bounded CFA DNG developer. */
     fun decodeBitmapForDevelop(
         resolver: android.content.ContentResolver,
         uri: android.net.Uri,
@@ -357,9 +358,41 @@ object ColorEngine {
             }.getOrNull()
             if (decoded != null) return decoded
         }
-        return runCatching {
+        val decoded = runCatching {
             val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleSize }
             resolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
+        }.getOrNull()
+        if (decoded != null) return decoded
+
+        // ImageDecoder and BitmapFactory do not support every DNG. Stage only a bounded
+        // amount of provider data; RawDevelopmentEngine independently validates TIFF ranges.
+        return runCatching {
+            val temp = File.createTempFile("irisi-dng-", ".dng")
+            try {
+                val input = resolver.openInputStream(uri) ?: throw IOException("Unable to open DNG URI.")
+                input.use { source ->
+                    temp.outputStream().use { sink ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val count = source.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            if (total > RawDevelopmentEngine.MAX_FILE_BYTES) {
+                                throw IOException("DNG exceeds the 128 MiB input limit.")
+                            }
+                            sink.write(buffer, 0, count)
+                        }
+                        if (total < 8L) throw IOException("DNG is too short.")
+                    }
+                }
+                val divisor = sampleSize.coerceAtLeast(1).toLong()
+                runBlocking {
+                    RawDevelopmentEngine.decodeFile(temp, 12_000_000L / (divisor * divisor).coerceAtLeast(1L))
+                }
+            } finally {
+                temp.delete()
+            }
         }.getOrNull()
     }
 

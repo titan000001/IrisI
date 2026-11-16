@@ -1,6 +1,9 @@
 package com.example.data.local
 
 import android.content.Context
+import android.content.ContentUris
+import android.os.Build
+import android.provider.MediaStore
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -8,6 +11,8 @@ import com.example.model.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -114,6 +119,100 @@ class CineRigRepository(
     suspend fun setMediaFavorite(id: Long, favorite: Boolean) = dao.setMediaFavorite(id, favorite)
 
     suspend fun deleteMediaLog(id: Long) = dao.deleteMediaLog(id)
+
+    /**
+     * Discover IrisI-owned outputs that predate the capture log (or whose log was removed).
+     * Intentionally limited to IrisI output folders so no broad media permission is needed.
+     * Negative IDs distinguish these MediaStore rows from Room log IDs in the existing UI.
+     */
+    suspend fun discoverOwnedMedia(): List<CapturedMediaEntity> = withContext(Dispatchers.IO) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@withContext emptyList()
+        val resolver = context.contentResolver
+        val found = mutableListOf<CapturedMediaEntity>()
+        val collections = listOf(
+            Triple(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, false, "DCIM/IrisI/"),
+            Triple(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, "Movies/IrisI/")
+        )
+        for ((collection, isVideo, relativePath) in collections) {
+            val columns = buildList {
+                add(MediaStore.MediaColumns._ID)
+                add(MediaStore.MediaColumns.DISPLAY_NAME)
+                add(MediaStore.MediaColumns.DATE_ADDED)
+                add(MediaStore.MediaColumns.SIZE)
+                if (isVideo) add(MediaStore.Video.VideoColumns.DURATION)
+            }
+            val trashedSelection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                " AND ${MediaStore.MediaColumns.IS_TRASHED} = 0"
+            } else ""
+            val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND " +
+                "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? AND " +
+                "${MediaStore.MediaColumns.IS_PENDING} = 0$trashedSelection"
+            val cursor = resolver.query(collection, columns.toTypedArray(), selection, arrayOf(relativePath, context.packageName), null)
+                ?: throw IllegalStateException("MediaStore did not return a media cursor")
+            cursor.use {
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                val dateCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
+                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+                val durationCol = if (isVideo) cursor.getColumnIndex(MediaStore.Video.VideoColumns.DURATION) else -1
+                while (cursor.moveToNext()) {
+                    val mediaId = cursor.getLong(idCol)
+                    val name = cursor.getString(nameCol).orEmpty()
+                    val uri = ContentUris.withAppendedId(collection, mediaId)
+                    val ext = name.substringAfterLast('.', "").uppercase()
+                    found += CapturedMediaEntity(
+                        id = if (isVideo) Long.MIN_VALUE + mediaId.coerceAtLeast(1L) else -mediaId.coerceAtLeast(1L),
+                        uriString = uri.toString(),
+                        displayName = name,
+                        isVideo = isVideo,
+                        formatBadge = if (isVideo) "MP4" else if (ext == "DNG") "DNG" else "JPG",
+                        resolutionLabel = "Local media",
+                        lensLabel = "—",
+                        iso = 0,
+                        shutterLabel = "—",
+                        logProfile = "—",
+                        filmPreset = "—",
+                        stabilizationMode = "—",
+                        durationMs = if (durationCol >= 0 && !cursor.isNull(durationCol)) cursor.getLong(durationCol) else 0L,
+                        fileBytes = if (cursor.isNull(sizeCol)) 0L else cursor.getLong(sizeCol),
+                        timestamp = cursor.getLong(dateCol) * 1000L
+                    )
+                }
+            }
+        }
+        found
+    }
+
+    suspend fun deleteOwnedMedia(uriString: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            if (uriString.startsWith("file:")) {
+                val file = java.io.File(android.net.Uri.parse(uriString).path ?: return@runCatching false).canonicalFile
+                val root = java.io.File(context.filesDir, "raw_sequences").canonicalFile
+                val allowed = file.path.startsWith(root.path + java.io.File.separator) &&
+                    (file.isDirectory || file.extension.equals("zip", ignoreCase = true)) &&
+                    file.deleteRecursively()
+                if (allowed && file.extension.equals("zip", ignoreCase = true)) {
+                    java.io.File(file.parentFile, file.nameWithoutExtension).deleteRecursively()
+                }
+                return@runCatching allowed
+            }
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@runCatching false
+            val uri = android.net.Uri.parse(uriString)
+            val isImage = uri.toString().startsWith(MediaStore.Images.Media.EXTERNAL_CONTENT_URI.toString())
+            val isVideo = uri.toString().startsWith(MediaStore.Video.Media.EXTERNAL_CONTENT_URI.toString())
+            if (!isImage && !isVideo) return@runCatching false
+            val expectedPath = if (isVideo) "Movies/IrisI/" else "DCIM/IrisI/"
+            val owned = context.contentResolver.query(
+                uri,
+                arrayOf(MediaStore.MediaColumns.RELATIVE_PATH, MediaStore.MediaColumns.OWNER_PACKAGE_NAME),
+                null, null, null
+            )?.use { cursor ->
+                cursor.moveToFirst() && cursor.getString(0) == expectedPath &&
+                    cursor.getString(1) == context.packageName
+            } == true
+            owned && context.contentResolver.delete(uri, null, null) > 0
+        }.getOrDefault(false)
+    }
 
     private fun CustomLayoutState.toEntity(): UiLayoutEntity {
         val array = JSONArray()

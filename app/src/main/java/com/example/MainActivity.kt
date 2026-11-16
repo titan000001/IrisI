@@ -10,8 +10,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.screens.ViewfinderScreen
@@ -28,52 +31,54 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             CineRigTheme {
-                val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-                val permissionLauncher = rememberLauncherForActivityResult(
-                    contract = ActivityResultContracts.RequestMultiplePermissions()
-                ) { results ->
-                    val cam = results[Manifest.permission.CAMERA]
-                        ?: (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
-                    val mic = results[Manifest.permission.RECORD_AUDIO]
-                        ?: (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
-                    viewModel.onPermissionsUpdated(cameraGranted = cam, audioGranted = mic)
-                }
-
-                LaunchedEffect(Unit) {
-                    val camGranted = ContextCompat.checkSelfPermission(
-                        this@MainActivity,
-                        Manifest.permission.CAMERA
-                    ) == PackageManager.PERMISSION_GRANTED
-                    val micGranted = ContextCompat.checkSelfPermission(
-                        this@MainActivity,
-                        Manifest.permission.RECORD_AUDIO
-                    ) == PackageManager.PERMISSION_GRANTED
-
-                    if (camGranted) {
-                        viewModel.onPermissionsUpdated(cameraGranted = true, audioGranted = micGranted)
-                    } else {
-                        permissionLauncher.launch(
-                            arrayOf(
-                                Manifest.permission.CAMERA,
-                                Manifest.permission.RECORD_AUDIO
-                            )
-                        )
+                    val permissionLauncher = rememberLauncherForActivityResult(
+                        contract = ActivityResultContracts.RequestMultiplePermissions()
+                    ) { results ->
+                        val cam = results[Manifest.permission.CAMERA]
+                            ?: (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+                        val mic = results[Manifest.permission.RECORD_AUDIO]
+                            ?: (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+                        viewModel.onPermissionsUpdated(cameraGranted = cam, audioGranted = mic)
                     }
-                }
 
-                ViewfinderScreen(
-                    state = uiState,
-                    viewModel = viewModel,
-                    onRequestPermissions = {
-                        permissionLauncher.launch(
-                            arrayOf(
-                                Manifest.permission.CAMERA,
-                                Manifest.permission.RECORD_AUDIO
+                    LaunchedEffect(Unit) {
+                        val camGranted = ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+                        val micGranted = ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+
+                        if (camGranted) {
+                            viewModel.onPermissionsUpdated(cameraGranted = true, audioGranted = micGranted)
+                        } else {
+                            permissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.CAMERA,
+                                    Manifest.permission.RECORD_AUDIO
+                                )
                             )
-                        )
+                        }
                     }
-                )
+
+                    ViewfinderScreen(
+                        state = uiState,
+                        viewModel = viewModel,
+                        onRequestPermissions = {
+                            permissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.CAMERA,
+                                    Manifest.permission.RECORD_AUDIO
+                                )
+                            )
+                        }
+                    )
+                }
             }
         }
     }

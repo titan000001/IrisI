@@ -354,7 +354,7 @@ fun HudWidgetRenderer(
     Box(modifier = boxModifier) {
         when (widgetId) {
             HudWidgetId.HISTOGRAM -> {
-                if (state.scopeMode != MonitorScopeMode.OFF || state.histogramEnabled || state.isLayoutEditMode) {
+                if (state.liveAnalysisAvailable && (state.scopeMode != MonitorScopeMode.OFF || state.histogramEnabled || state.isLayoutEditMode)) {
                     MonitorScopeWidget(
                         scopeMode = if (state.scopeMode == MonitorScopeMode.OFF) MonitorScopeMode.HISTOGRAM else state.scopeMode,
                         data = state.histogramData,
