@@ -1,6 +1,28 @@
 # Test results
 
-Date: 2026-11-16. This report distinguishes software test results from reference execution and physical-camera validation. Final command output and device smoke evidence are appended below when available; pending runs are not PASS.
+Date: 2026-11-17. This report distinguishes software test results from reference execution and physical-camera validation. Pending runs are not PASS.
+
+## Published checkpoint validation — 2026-11-17
+
+Commit `4c7b9ca` was pushed directly to `main` as a progress checkpoint, not a
+release. The stable-tree command
+`:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug --no-configuration-cache --no-daemon --max-workers=1`
+completed successfully in 10m25s: **54 host tests passed**, both APKs assembled,
+and lint reported zero errors with 73 warnings.
+
+Matching APKs were installed on wireless Pixel 7 Pro/API37
+(`192.168.0.104:38001`). The five targeted instrumentation classes passed **11
+tests in 5.764s**, with no camera media created. The local instrumentation log
+SHA-256 is `5173333012372c8f7320240bb7b3063151865bbc9af79393ca9a94e8a8ed6c0c`.
+The validated app APK SHA-256 is
+`89b5f9a4a1549c4ed191874bc47784c83c8aee10125352c35ff0917eec1a6bf7`; the test
+APK SHA-256 is
+`a09af49cce56454a11726923c88b2c8a041e1148c7b590505973ea191710c055`.
+
+Hosted GitHub Actions run
+[#43925680456](https://github.com/titan000001/IrisI/actions/runs/43925680456)
+did not reach the Android build: `android-actions/setup-android@v3` failed, so
+compile, tests and lint were skipped. This is a setup failure, not a hosted pass.
 
 ## Branding, theme and recovery continuation
 
@@ -14,7 +36,7 @@ The app/test APKs built, but lint found an actual extractor/codec flag-domain er
 in LOG remuxing (1 error, 73 warnings); explicit mapping and regression coverage
 have been added. **54 host tests subsequently passed**, zero failures/errors/skips.
 The next batch-share regression exposed a build source-snapshot overlap; final
-stable-tree app/test-APK/lint verification is pending. Details:
+stable-tree app/test-APK/lint verification subsequently passed as recorded above. Details:
 [`BRANDING-THEME-RECOVERY-20261116.md`](docs/validation/BRANDING-THEME-RECOVERY-20261116.md).
 
 ## Encoded LOG/HDR direction

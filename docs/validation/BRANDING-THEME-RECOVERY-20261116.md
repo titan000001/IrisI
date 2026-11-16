@@ -5,8 +5,7 @@
 - Organic optical-bloom identity, editable SVGs, adaptive vector foreground,
   transparent monochrome pupil and all five legacy launcher densities.
 - Repository README, documented feature boundaries, contributor guide, issue/PR
-  templates and a debug-only Android CI workflow. No license was invented and
-  no remote publication has been performed.
+  templates and a debug-only Android CI workflow. No license was invented.
 - Dynamic Material palettes enabled by default on API31+, system light/dark
   mode and fallback light/dark schemes. The whole dynamic palette is used rather
   than mixing wallpaper text colors with unrelated fixed surfaces. Only the
@@ -76,15 +75,21 @@ resumed/focused-app check yielded the useful captures. The device's original
 `auto` night-mode setting was restored in `finally`. Screenshots were not added
 to the repository because they contain private device-status and camera content.
 
-Final remux-fix Gradle results are pending. Hosted CI is not yet executed.
+Final remux-fix Gradle results passed locally: 54 host tests, app/test APK
+assembly and lint with zero errors (73 warnings). The matching-APK Pixel rerun
+also passed 11 tests in 5.764s; exact hashes and the local log hash are in
+`TEST_RESULTS.md`. Hosted CI run
+[#43925680456](https://github.com/titan000001/IrisI/actions/runs/43925680456)
+failed in `android-actions/setup-android@v3` before Gradle, so hosted compile,
+tests and lint were skipped.
 
 ## Publication checkpoint — 2026-11-17
 
 The user explicitly chose a progress commit/push directly to `main`, without the
 full release/PR workflow. This is not a release or a claim that all gates passed.
-The stable-tree run has passed the 54 host tests and assembled both the app and
-test APK; final lint and the matching-APK Pixel rerun were still in progress when
-this checkpoint was prepared. No interruption-state feature has been added yet.
+The stable-tree run passed the 54 host tests, assembled both the app and test APK,
+and passed lint; the matching-APK Pixel rerun passed 11 tests. No
+interruption-state feature has been added yet.
 Private captures, raw reference artifacts, local configuration and unrelated
 automation are intentionally not part of the published checkpoint.
 
@@ -97,7 +102,7 @@ chooser, includes every stream in `ClipData`, grants read only, deduplicates
 streams and chooses ZIP/video/image/mixed MIME types. Invalid or unavailable
 private files fail closed with a visible error, rather than a partial batch.
 Two real-provider device tests cover a mixed archive/video batch and duplicate/
-invalid selections. Their execution is pending the final test APK.
+invalid selections. They passed in the matching-APK Pixel rerun.
 
 ## Repeatable checks
 
@@ -106,6 +111,9 @@ with `--no-configuration-cache --no-daemon --max-workers=1` using Android Studio
 
 Targeted Android classes (no camera media created):
 
+- `com.example.MediaShareIntentsTest`: mixed batch read grants, deduplication and
+  fail-closed invalid selections.
+- `com.example.CameraConsoleDisclosureTest`: live-activity capture-tool disclosure.
 - `com.example.CinemaThemeModeTest`: system-mode recomposition; monitor remains dark.
 - `com.example.LogRecoverySectionTest`: empty queue, disclosure, status warning,
   chosen-original callback.
